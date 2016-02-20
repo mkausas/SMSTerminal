@@ -9,6 +9,7 @@ var mongoose = require('mongoose');
 var StatefulProcessCommandProxy = require('stateful-process-command-proxy');
 
 var Request = require('./request');
+var User = require('./user');
 
 var app = express();
 
@@ -22,6 +23,8 @@ var client = twilio(keys.accountSid, keys.authToken);
 var mongoURI = keys.databaseUri;
 var MongoDB = mongoose.connect(mongoURI).connection;
 
+var ok = '👌';
+
 MongoDB.on('error', function(err) {
   console.log(err.message);
 });
@@ -32,18 +35,36 @@ MongoDB.once('open', function() {
 
 mongoose.connect(mongoURI);
 
-var resetRequests = function() {
+var currentEpochTime = function() {
+  return Math.round(new Date().getTime() / 1000);
+};
+
+var resetDatabase = function() {
   Request.find({}, function(err, requests) {
     if (!err && requests) {
       requests.forEach(function(request) {
-        request.running = false;
-        request.save();
+        if (request.running) {
+          request.running = false;
+          request.updatedAt = currentEpochTime();
+          request.save();
+        }
+      });
+    }
+  });
+  User.find({}, function(err, users) {
+    if (!err && users) {
+      users.forEach(function(user) {
+        if (user.hasAccess) {
+          user.hasAccess = false;
+          user.updatedAt = currentEpochTime();
+          user.save();
+        }
       });
     }
   });
 };
 
-resetRequests();
+resetDatabase();
 
 var statefulProcessCommandProxy = new StatefulProcessCommandProxy({
   name: 'twilioInstance',
@@ -79,27 +100,85 @@ var initTempNumber = function(request) {
     sendMessage(keys.master, keys.user, 'Temporary terminal already running at ' + request.phoneNumber);
   } else {
     request.running = true;
+    request.updatedAt = currentEpochTime();
     request.save();
-    sendMessage(keys.master, keys.user, 'Temporary terminal created at ' + request.phoneNumber);
-    sendMessage(request.phoneNumber, keys.user, 'Welcome to SMSTerminal! Your session will expire in 15 minutes.');
+    sendMessage(keys.master, keys.user, request.phoneNumber);
+    sendMessage(request.phoneNumber, keys.user, 'Welcome to SMSTerminal! Your session will expire in ' + (request.timeout / 60000) + ' minutes.');
     setTimeout(function() {
-      request.running = false;
-      request.save();
+      resetDatabase();
       statefulProcessCommandProxy.shutdown();
     }, request.timeout);
   }
 };
 
+var getCurrentSessionNumber = function(callback) {
+  Request.find({}, function(err, requests) {
+    if (!err && requests) {
+      var phoneNumberFound = {};
+      var phoneNumber = '';
+      try {
+        requests.forEach(function(request) {
+          if (request.running) {
+            phoneNumber = request.phoneNumber;
+            throw phoneNumberFound;
+          }
+        });
+      } catch (e) {
+        if (e !== phoneNumberFound) {
+          throw e;
+        }
+      }
+      callback(null, phoneNumber);
+    } else {
+      callback('error', null);
+    }
+  });
+}
+
 app.post('/twiml', function(req, res) {
   var data = req.body;
   if (twilio.validateExpressRequest(req, keys.authToken, {url: keys.twmilUrl})) {
-    if (data.From == keys.user) {
-      if (data.To == keys.master) {
-        var command = data.Body.toLowerCase();
-        if (command == 'shutdown') {
-          statefulProcessCommandProxy.shutdown();
-          sendMessage(keys.master, keys.user, 'Shell stopped');
-        } else if (command == 'request') {
+    var runInShell = function() {
+      getCurrentSessionNumber(function(err, phoneNumber) {
+        if (!err && phoneNumber) {
+          if (phoneNumber == data.To) {
+
+            var broadcastMessage = function(cmd, msg) {
+              User.find({hasAccess: true}, function(err, users) {
+                if (!err && users) {
+                  users.forEach(function(user) {
+                    if (user.phoneNumber != data.From) {
+                      sendMessage(data.To, user.phoneNumber, data.From + ': ' + cmd + '\n\n' + (msg || ok));
+                    } else {
+                      sendMessage(data.To, user.phoneNumber, msg || ok);
+                    }
+                  });
+                }
+              });
+              if (data.From != keys.user) {
+                sendMessage(data.To, keys.user, data.From + ': ' + cmd + '\n\n' + (msg || ok));
+              } else {
+                sendMessage(data.To, keys.user, msg || ok);
+              }
+            };
+
+            statefulProcessCommandProxy.executeCommand(data.Body).then(function(cmdResult) {
+              broadcastMessage(data.Body, cmdResult.stdout);
+              res.send(null);
+            }).catch(function(error) {
+              console.log('Error: ' + error);
+              broadcastMessage(data.Body, 'Error: ' + error);
+            });
+          }
+        } else {
+          sendMessage(data.To, keys.user, 'Error: Session not running');
+        }
+      });
+    };
+
+    if (data.From == keys.user && data.To == keys.master) {
+
+        var requestCommand = function(time) {
           // If there's at least one temporary phone number in the database, use it instead of creating one
           Request.find({}, function(err, requests) {
             if (!err && requests[0]) {
@@ -110,6 +189,9 @@ app.post('/twiml', function(req, res) {
                 client.incomingPhoneNumbers.create({phoneNumber: number}, function(err, purchasedNumber) {
                   if (!err && purchasedNumber) {
                     var request = new Request({phoneNumber: number});
+                    if (time) {
+                      request.timeout = time;
+                    }
                     request.save(function(err) {
                       initTempNumber(request);
                     });
@@ -120,45 +202,73 @@ app.post('/twiml', function(req, res) {
               });
             }
           });
+        };
+
+        var command = data.Body.toLowerCase();
+        if (command == 'shutdown') {
+          resetDatabase();
+          statefulProcessCommandProxy.shutdown();
+          sendMessage(keys.master, keys.user, ok);
+        } else if (command == 'request') {
+          requestCommand(null);
         } else if (command == '?') {
           sendMessage(keys.master, keys.user,
-            'request: Request a new shell session\n'
+            'request: Request a 15 minute shell session\n'
+            + 'request 30: Request a 30 minute shell session (max 120 minutes)\n'
+            + 'add +10005553333: Add number 000-555-3333 to shell session\n'
             + 'shutdown: Stop the existing shell session\n'
             + '?: Display this dialog');
-        } else {
-          sendMessage(keys.master, keys.user, 'Unknown command');
-        }
-      } else {
-        Request.find({}, function(err, requests) {
-          if (!err && requests) {
-            var phoneNumberFound = {};
-            try {
-              requests.forEach(function(request) {
-                if (request.phoneNumber == data.To) {
-                  statefulProcessCommandProxy.executeCommand(data.Body).then(function(cmdResult) {
-                    sendMessage(data.To, keys.user, cmdResult.stdout || '👌');
-                  	res.send(null);
-                  }).catch(function(error) {
-                    console.log('Error: ' + error);
-                    sendMessage(data.To, keys.user, 'Error: ' + error);
-            	    });
-                  throw phoneNumberFound;
-                }
-                request.save();
-              });
-            } catch (e) {
-              if (e !== phoneNumberFound) {
-                throw e;
-              }
+        } else if (command.indexOf(' ') != -1) {
+          var pos = command.indexOf(' ');
+          var params = command.substring(pos + 1);
+          command = command.substring(0, pos);
+          if (command == 'request' && params) {
+            var minutes = Integer.parseInt(params);
+            if (0 < minutes && minutes <= 120) {
+              requestCommand(minutes * 60000);
+            } else {
+              sendMessage(keys.master, keys.user, 'Error: Minutes must be between 1 and 120');
             }
+          } else if (command == 'add' && params) {
+            getCurrentSessionNumber(function(err, phoneNumber) {
+              if (!err && phoneNumber) {
+                User.findOne({phoneNumber: params}, function(err, user) {
+                  if (!err && user) {
+                    if (!user.hasAccess) {
+                      user.hasAccess = true;
+                      user.updatedAt = currentEpochTime();
+                      user.save();
+                    }
+                  } else {
+                    var user = new User({phoneNumber: params});
+                    user.save();
+                  }
+                  sendMessage(keys.master, keys.user, ok);
+                  sendMessage(phoneNumber, params, 'You\'ve been added to a terminal session by ' + keys.user);
+                });
+              } else {
+                sendMessage(keys.master, keys.user, 'Error: Session not running');
+              }
+            });
+          } else {
+            sendMessage(keys.master, keys.user, 'Error: Unknown command');
           }
-        });
-      }
+        } else {
+          sendMessage(keys.master, keys.user, 'Error: Unknown command');
+        }
+    } else if (data.From == keys.user) {
+      runInShell();
     } else {
-      var failedLoginText = 'Failed login attempt by ' + data.From + ' on number ' + data.To;
-      console.log(failedLoginText);
-      sendMessage(keys.master, keys.user, failedLoginText);
-      sendMessage(data.To, data.From, 'I\'m sorry hackathon hacker, I\'m afraid can\'t let you do that');
+      User.findOne({phoneNumber: data.From}, function(err, user) {
+        if (!err && user && user.hasAccess) {
+          runInShell();
+        } else {
+          var failedLoginText = 'Failed login attempt by ' + data.From + ' on number ' + data.To;
+          console.log(failedLoginText);
+          sendMessage(keys.master, keys.user, failedLoginText);
+          sendMessage(data.To, data.From, 'I\'m sorry hackathon hacker, I\'m afraid can\'t let you do that');
+        }
+      });
     }
   } else {
     console.log('Invalid authentication');
@@ -179,13 +289,9 @@ var sendMessage = function(sender, receiver, content) {
 };
 
 app.get('/', function(req, res) {
-  res.send('OK');
+  res.send(ok);
 });
 
 app.listen(3000, function() {
   console.log('Server is running on port 3000');
 });
-
-// setTimeout(function() {
-//   statefulProcessCommandProxy.shutdown();
-// },10000);
