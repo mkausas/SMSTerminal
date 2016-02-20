@@ -39,6 +39,23 @@ var currentEpochTime = function() {
   return Math.round(new Date().getTime() / 1000);
 };
 
+var disableAllUsers = function(number) {
+  User.find({}, function(err, users) {
+    if (!err && users) {
+      users.forEach(function(user) {
+        if (user.hasAccess) {
+          user.hasAccess = false;
+          user.updatedAt = currentEpochTime();
+          user.save();
+          if (number) {
+            sendMessage(number, user.phoneNumber, 'You\'ve been removed from this session');
+          }
+        }
+      });
+    }
+  });
+};
+
 var resetDatabase = function() {
   Request.find({}, function(err, requests) {
     if (!err && requests) {
@@ -51,24 +68,14 @@ var resetDatabase = function() {
       });
     }
   });
-  User.find({}, function(err, users) {
-    if (!err && users) {
-      users.forEach(function(user) {
-        if (user.hasAccess) {
-          user.hasAccess = false;
-          user.updatedAt = currentEpochTime();
-          user.save();
-        }
-      });
-    }
-  });
+  disableAllUsers();
 };
 
 resetDatabase();
 
 var statefulProcessCommandProxy = new StatefulProcessCommandProxy({
   name: 'twilioInstance',
-  max: 1,
+  max: 5,
   min: 1,
   idleTimeoutMS: 90000,
   logFunction: function(severity, origin, msg) {},
@@ -133,7 +140,7 @@ var getCurrentSessionNumber = function(callback) {
       callback('error', null);
     }
   });
-}
+};
 
 app.post('/twiml', function(req, res) {
   var data = req.body;
@@ -182,7 +189,16 @@ app.post('/twiml', function(req, res) {
           // If there's at least one temporary phone number in the database, use it instead of creating one
           Request.find({}, function(err, requests) {
             if (!err && requests[0]) {
-              initTempNumber(requests[0]);
+              var request = requests[0];
+              if (time) {
+                request.timeout = time;
+                request.updatedAt = currentEpochTime();
+                request.save(function(err) {
+                  initTempNumber(request);
+                });
+              } else {
+                initTempNumber(request);
+              }
             } else {
               client.availablePhoneNumbers('US').local.list({}, function(err, numbers) {
                 var number = numbers.available_phone_numbers[0].phone_number;
@@ -206,9 +222,16 @@ app.post('/twiml', function(req, res) {
 
         var command = data.Body.toLowerCase();
         if (command == 'shutdown') {
-          resetDatabase();
-          statefulProcessCommandProxy.shutdown();
-          sendMessage(keys.master, keys.user, ok);
+          getCurrentSessionNumber(function(err, phoneNumber) {
+            if (!err && phoneNumber) {
+              //sendMessage(keys.master, phoneNumber, 'Shell session has ended. Clear this text conversation for added security.');
+              resetDatabase();
+              statefulProcessCommandProxy.shutdown();
+              sendMessage(keys.master, keys.user, ok);
+            } else {
+              sendMessage(keys.master, keys.user, 'No running service');
+            }
+          });
         } else if (command == 'request') {
           requestCommand(null);
         } else if (command == '?') {
@@ -216,6 +239,7 @@ app.post('/twiml', function(req, res) {
             'request: Request a 15 minute shell session\n'
             + 'request 30: Request a 30 minute shell session (max 120 minutes)\n'
             + 'add +10005553333: Add number 000-555-3333 to shell session\n'
+            + 'remove all: Removes all users from shell session except you\n'
             + 'shutdown: Stop the existing shell session\n'
             + '?: Display this dialog');
         } else if (command.indexOf(' ') != -1) {
@@ -223,11 +247,25 @@ app.post('/twiml', function(req, res) {
           var params = command.substring(pos + 1);
           command = command.substring(0, pos);
           if (command == 'request' && params) {
-            var minutes = Integer.parseInt(params);
+            var minutes = parseInt(params);
             if (0 < minutes && minutes <= 120) {
+
               requestCommand(minutes * 60000);
             } else {
               sendMessage(keys.master, keys.user, 'Error: Minutes must be between 1 and 120');
+            }
+          } else if (command == 'remove' && params) {
+            if (params == 'all') {
+              getCurrentSessionNumber(function(err, phoneNumber) {
+                if (!err && phoneNumber) {
+                  disableAllUsers(phoneNumber);
+                  sendMessage(keys.master, keys.user, ok);
+                } else {
+                  sendMessage(keys.master, keys.user, 'No running service');
+                }
+              });
+            } else {
+              sendMessage(keys.master, keys.user, 'Error: Operation not supported. Use \'remove all\'');
             }
           } else if (command == 'add' && params) {
             getCurrentSessionNumber(function(err, phoneNumber) {
@@ -264,7 +302,6 @@ app.post('/twiml', function(req, res) {
           runInShell();
         } else {
           var failedLoginText = 'Failed login attempt by ' + data.From + ' on number ' + data.To;
-          console.log(failedLoginText);
           sendMessage(keys.master, keys.user, failedLoginText);
           sendMessage(data.To, data.From, 'I\'m sorry hackathon hacker, I\'m afraid can\'t let you do that');
         }
