@@ -12,6 +12,8 @@ var Request = require('./request');
 var User = require('./user');
 
 var app = express();
+app.set('views', __dirname + '/layouts');
+app.set('view engine', 'ejs');
 
 app.use(bodyParser.urlencoded({extended: true}));
 
@@ -221,7 +223,9 @@ app.post('/twiml', function(req, res) {
         };
 
         var command = data.Body.toLowerCase();
-        if (command == 'shutdown') {
+        if (command == 'status') {
+          sendMessage(keys.master, keys.user, statefulProcessCommandProxy.getStatus());
+        } else if (command == 'shutdown') {
           getCurrentSessionNumber(function(err, phoneNumber) {
             if (!err && phoneNumber) {
               //sendMessage(keys.master, phoneNumber, 'Shell session has ended. Clear this text conversation for added security.');
@@ -326,8 +330,10 @@ var sendMessage = function(sender, receiver, content) {
 };
 
 app.get('/', function(req, res) {
-  res.send(ok);
+  res.render('index', {message: ok});
 });
+
+
 
 app.listen(3000, function() {
   console.log('Server is running on port 3000');
