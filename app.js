@@ -4,12 +4,8 @@ var fs = require('fs');
 var express = require('express');
 var twilio = require('twilio');
 var bodyParser = require('body-parser');
-
-// command line args
-var sys = require('util')
-var exec = require('child_process').exec;
-var child;
-
+var Promise = require('promise');
+var StatefulProcessCommandProxy = require('stateful-process-command-proxy');
 
 var app = express();
 
@@ -20,6 +16,28 @@ var jsonKeys = JSON.parse(keys);
 
 var client = twilio(jsonKeys.accountSid, jsonKeys.authToken);
 
+var statefulProcessCommandProxy = new StatefulProcessCommandProxy({
+  name: 'twilioInstance',
+  max: 1,
+  min: 1,
+  idleTimeoutMS: 10000,
+  logFunction: function(severity,origin,msg) {
+    //console.log(severity.toUpperCase() + " " +origin+" "+ msg);
+  },
+  processCommand: '/bin/bash',
+  processArgs: ['-s'],
+  processRetainMaxCmdHistory: 10,
+  processInvalidateOnRegex: {
+    'any': [{regex:'.*error.*',flags:'ig'}],
+    'stdout': [{regex:'.*error.*',flags:'ig'}],
+    'stderr': [{regex:'.*error.*',flags:'ig'}]
+  },
+  validateFunction: function(processProxy) {
+    return processProxy.isValid();
+  },
+  preDestroyCommands: ['echo This ProcessProxy is being destroyed!']
+});
+
 app.post('/twiml', function(req, res) {
   var data = req.body;
   if (twilio.validateExpressRequest(req, jsonKeys.authToken, {url: jsonKeys.twmilUrl})) {
@@ -28,25 +46,30 @@ app.post('/twiml', function(req, res) {
     // resp.say('Received');
     // res.type('text/xml');
     // res.send(resp.toString());
-	
-	exec(data.Body, function (error, stdout, stderr) {
- 		console.log('stdout: ' + stdout);
- 		console.log('stderr: ' + stderr);
-
-		client.messages.create({
+    if (data.Body == 'shell-quit') {
+      statefulProcessCommandProxy.shutdown();
+      client.messages.create({
+        to: data.From,
+        from: data.To,
+        body: 'SMSTerminal: Shell stopped',
+      }, function(err, message) {
+        console.log(message);
+      });
+    } else {
+      statefulProcessCommandProxy.executeCommand(data.Body).then(function(cmdResult) {
+        client.messages.create({
       		to: data.From,
       		from: data.To,
-      		body: stdout,
-    	}, function(err, message) {
-      		console.log(message.sid);
-    	});
-    	res.send(null);
- 		
- 		if (error !== null) {
- 			console.log('exec error: ' + error);
- 		}
- 	});
-	
+      		body: cmdResult.stdout,
+      	}, function(err, message) {
+        	console.log(message);
+      	});
+      	res.send(null);
+      }).catch(function(error) {
+        console.log('Error: ' + error);
+      });
+    }
+
   } else {
     console.log('Invalid authentication');
     res.status(403).send('Invalid authentication');
@@ -60,3 +83,7 @@ app.get('/', function(req, res) {
 app.listen(3000, function() {
   console.log('Server is running on port 3000');
 });
+
+// setTimeout(function() {
+//   statefulProcessCommandProxy.shutdown();
+// },10000);
