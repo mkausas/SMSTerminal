@@ -1,0 +1,22 @@
+{
+  "name": "SMSTerminal",
+  "version": "1.0.0",
+  "description": "Run terminal commands via SMS and twilio",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/mkausas/SMSTerminal"
+  },
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/mkausas/SMSTerminal/issues"
+  },
+  "homepage": "https://github.com/mkausas/SMSTerminal",
+  "dependencies": {
+    "twilio": "^3.3.0-edge"
+  }
+}
