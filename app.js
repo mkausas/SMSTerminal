@@ -48,26 +48,14 @@ app.post('/twiml', function(req, res) {
     // res.send(resp.toString());
     if (data.Body == 'shell-quit') {
       statefulProcessCommandProxy.shutdown();
-      client.messages.create({
-        to: data.From,
-        from: data.To,
-        body: 'SMSTerminal: Shell stopped',
-      }, function(err, message) {
-        console.log(message);
-      });
+      sendMessage(data.From, data.To, 'SMSTerminal: Shell stopped');
     } else {
       statefulProcessCommandProxy.executeCommand(data.Body).then(function(cmdResult) {
-        client.messages.create({
-      		to: data.From,
-      		from: data.To,
-      		body: cmdResult.stdout,
-      	}, function(err, message) {
-        	console.log(message);
-      	});
+        sendMessage(data.From, data.To, cmdResult.stdout);
       	res.send(null);
       }).catch(function(error) {
         console.log('Error: ' + error);
-      });
+	  });
     }
 
   } else {
@@ -75,6 +63,19 @@ app.post('/twiml', function(req, res) {
     res.status(403).send('Invalid authentication');
   }
 });
+
+function sendMessage(from, to, content) {
+  client.messages.create({
+    to: from,
+    from: to,
+    body: content,
+  }, function(err, message) {
+    console.log('Error executing command: ' + message + err);
+    
+    if (err != null)
+      sendMessage(from, to, 'Invalid command: ' + message);
+  });
+}
 
 app.get('/', function(req, res) {
   res.send('OK');
