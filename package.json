@@ -17,6 +17,8 @@
   },
   "homepage": "https://github.com/mkausas/SMSTerminal",
   "dependencies": {
+    "body-parser": "^1.15.0",
+    "express": "^4.13.4",
     "twilio": "^3.3.0-edge"
   }
 }
