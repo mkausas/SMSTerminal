@@ -15,7 +15,10 @@ Create `./keys.json` with live account sid and live auth token from https://www.
 {
   "accountSid": "LIVE_ACCOUNT_SID",
   "authToken": "LIVE_AUTH_TOKEN",
-  "twmilUrl": "https://DOMAIN-CODE.ngrok.io/twmil"
+  "twmilUrl": "https://DOMAIN-CODE.ngrok.io/twmil",
+  "databaseUri": "mongodb://localhost:27017/test_db_name",
+  "master": "+1masterPhoneNumber",
+  "user": "+1userPhoneNumber"
 }
 ```
 

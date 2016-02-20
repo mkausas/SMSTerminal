@@ -10,6 +10,10 @@ var requestSchema = new mongoose.Schema({
     default: Date.now
   },
   phoneNumber: String,
+  running: {
+    type: Boolean,
+    default: false
+  },
   timeout: {
     type: Number,
     default: 900000 //15 minutes
