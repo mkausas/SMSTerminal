@@ -5,6 +5,7 @@ var express = require('express');
 var twilio = require('twilio');
 var bodyParser = require('body-parser');
 var Promise = require('promise');
+var mongoose = require('mongoose');
 var StatefulProcessCommandProxy = require('stateful-process-command-proxy');
 
 var app = express();
@@ -15,6 +16,19 @@ var keys = fs.readFileSync('./keys.json');
 var jsonKeys = JSON.parse(keys);
 
 var client = twilio(jsonKeys.accountSid, jsonKeys.authToken);
+
+var mongoURI = jsonKeys.databaseUri;
+var MongoDB = mongoose.connect(mongoURI).connection;
+
+MongoDB.on('error', function(err) {
+  console.log(err.message);
+});
+
+MongoDB.once('open', function() {
+  console.log('Connected to MongoDB');
+});
+
+mongoose.connect(mongoURI);
 
 var statefulProcessCommandProxy = new StatefulProcessCommandProxy({
   name: 'twilioInstance',
@@ -28,9 +42,9 @@ var statefulProcessCommandProxy = new StatefulProcessCommandProxy({
   processArgs: ['-s'],
   processRetainMaxCmdHistory: 10,
   processInvalidateOnRegex: {
-    'any': [{regex:'.*error.*',flags:'ig'}],
-    'stdout': [{regex:'.*error.*',flags:'ig'}],
-    'stderr': [{regex:'.*error.*',flags:'ig'}]
+    'any': [{regex:'.*error.*', flags:'ig'}],
+    'stdout': [{regex:'.*error.*', flags:'ig'}],
+    'stderr': [{regex:'.*error.*', flags:'ig'}]
   },
   validateFunction: function(processProxy) {
     return processProxy.isValid();
